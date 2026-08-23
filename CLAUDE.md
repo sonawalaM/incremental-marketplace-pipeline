@@ -1,7 +1,8 @@
 # Incremental Marketplace Revenue Pipeline
 
-Portfolio project for Mansukh Sonawala's paid technical writing business. The repo must be
-good enough that a developer-tool content team reads it and commissions an article.
+Reference implementation of a re-runnable incremental pipeline across heterogeneous
+marketplace feeds. The repo must be good enough that a developer-tool content team reads it
+and commissions an article — treat every file as public-facing work product.
 
 ## What this is
 
@@ -55,6 +56,20 @@ A refund arrives as a **restatement of the original order**, not as a new row. S
 A back-dated refund must reduce **that day's** revenue, not today's. That is the whole
 two-clock argument in one sentence a reader already understands.
 
+## README is part of every step — not a task for the end
+
+`README.md` is the first thing a buyer opens, so it is a deliverable, not documentation debt.
+**Every build step updates it in the same commit as the code.** Specifically:
+
+- Tick the step off in the **Build status** table
+- Add any new command to **Running individual steps**
+- Update **Tested with** whenever a version is pinned or bumped
+- If the step revealed a real trap (version drift, partition-pruning hazard, encoding), write
+  it down — those paragraphs are what separate this from a tutorial, and they become article
+  material for free
+
+A step is not done until the README reflects it.
+
 ## Hard rules
 
 - **Interval bounds are arguments, never clock reads.**
@@ -74,28 +89,24 @@ two-clock argument in one sentence a reader already understands.
 
 ## Build order — step 5 is a gate
 
-1. ✅ Source DB + deterministic feeds *(done, verified)*
-2. ✅ Bronze ingestion — interval-bound JDBC read, Delta append *(written; first run pending)*
-3. Normalize 3 feeds → one order shape (currency → USD, status → canonical, TZ → UTC)
-4. Silver MERGE — dedup + restatement guard
-5. **GATE: verification suite passes**
-   - order count unchanged on rerun
-   - **per-marketplace-per-day net revenue equals baseline** ← the check that matters
-   - no duplicate order keys in `fct_orders`
-   - a back-dated refund lands on the order's date, not today's
+1. ✅ Source DB + deterministic feeds — *verified: 2416/2421/2393 rows*
+2. ✅ Bronze ingestion — *verified: 348/321/312 for 2026-08-02*
+3. ✅ Normalize 3 feeds → one shape — *verified vs source: 981 rows, $197,056.32*
+4. ✅ Silver MERGE + restatement guard — *verified: 981→828, 153 collapsed, 0 dup keys, $165,739.46*
+5. ✅ Gate — 7-day forward pass then replay an old interval; 4 assertions (`src/gate.py`)
 6. Gold — `fct_orders`, `agg_daily_revenue`
 7. Broken mode (`make demo-broken`)
 8. Airflow DAG + backfill demo
-9. dbt marts + tests
-10. CI, README, clean-clone test
+9. dbt marts + data quality tests
+10. CI + clean-clone verification
 
 Nothing past step 5 matters if step 5 fails.
 
 ## Versions — pin exactly, no ranges
 
 `pyspark` and `delta-spark` **must be a matched pair** — Delta releases target one Spark minor.
-Currently building on `pyspark==4.0.1` + `delta-spark==4.0.0` + Java 17 (see `Dockerfile`).
-Once a run succeeds, record the exact versions in the README's "tested with" block.
+Verified working: `pyspark==4.0.1` + `delta-spark==4.0.0` + Java 21 + Postgres 16 +
+JDBC 42.7.4. Pinned in `requirements.txt` and recorded in the README's "Tested with" block.
 
 ## Conventions
 

@@ -1,18 +1,19 @@
-# Exact pins, not ranges. Version drift is the usual cause of death for a tutorial
-# nobody can reproduce.
+# Exact pins, not ranges. Version drift is the usual cause of death for a tutorial nobody
+# can reproduce six months after publication.
 #
-# ⚠ VERIFY BEFORE PINNING — these move, and I can't confirm the current matrix from here:
-#   * pyspark and delta-spark must be a MATCHED PAIR. Delta releases target one Spark minor.
-#     Check the Delta release notes for the Spark version each release supports.
-#   * Java must be a version your chosen Spark release supports. Confirm with `java -version`.
-#   * dbt-spark[session] needs a pyspark matching the one above.
-# Once you've confirmed a working combination, replace the ranges below with == pins and
-# record the exact versions in the README's "tested with" block.
+# pyspark and delta-spark MUST be a matched pair — each Delta release targets one Spark minor.
+# A mismatch fails at runtime with an unhelpful error, not at install time.
+#
+# These are installed inside the jobs container (see Dockerfile), which also bakes in the
+# Delta and Postgres JDBC jars so the first spark-submit needs no network.
+#
+# Verified working together on Java 21 / Debian trixie / Python 3.11.
 
-pyspark==<PIN_ME>
-delta-spark==<PIN_ME>          # must match the pyspark minor above
-dbt-core==<PIN_ME>
-dbt-spark[session]==<PIN_ME>
-
+pyspark==4.0.1
+delta-spark==4.0.0          # targets Spark 4.0.x — do not bump one without the other
 psycopg2-binary==2.9.9
 pytest==8.3.4
+
+# Added at build step 9.
+# dbt-core==
+# dbt-spark[session]==

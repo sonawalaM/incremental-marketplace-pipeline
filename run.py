@@ -115,6 +115,10 @@ def main() -> int:
         "bronze": (jobs + ["-m", "src.ingestion.bronze"] + interval, 900),
         "normalize": (jobs + ["-m", "src.transform.normalize"] + interval, 900),
         "silver": (jobs + ["-m", "src.ingestion.silver"] + interval, 900),
+        # The gate manages its own lake and its own intervals — it is a full 7-day forward
+        # pass plus a replay, not a single-interval job.
+        "gate": (jobs + ["-m", "src.gate", "--start", "2026-08-01",
+                         "--days", "7", "--replay", "2026-08-02"], 1800),
         "tests": (jobs + ["-m", "pytest", "tests/", "-q"], 900),
     }
 
