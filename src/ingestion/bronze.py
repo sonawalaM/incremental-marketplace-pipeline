@@ -24,7 +24,13 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from src.common import config
-from src.common.spark import build_spark, default_run_id, get_logger, parse_interval
+from src.common.spark import (
+    build_spark,
+    default_run_id,
+    emit_metric,
+    get_logger,
+    parse_interval,
+)
 
 log = get_logger("bronze")
 
@@ -67,6 +73,7 @@ def ingest_feed(spark: SparkSession, feed: config.Feed, run_id: str,
     n = df.count()
     if n == 0:
         log.warning("%s | 0 rows in interval — nothing written", feed.name)
+        emit_metric(job="bronze", feed=feed.name, rows_appended=0)
         return 0
     (df.write.format("delta")
        .mode("append")
@@ -74,6 +81,7 @@ def ingest_feed(spark: SparkSession, feed: config.Feed, run_id: str,
        .option("mergeSchema", "false")     # schema evolution is article #2, not a silent default
        .save(feed.bronze_path))
     log.info("%s | appended %d rows -> %s", feed.name, n, feed.bronze_path)
+    emit_metric(job="bronze", feed=feed.name, rows_appended=n, run_id=run_id)
     return n
 
 
@@ -103,6 +111,7 @@ def main() -> None:
         spark.stop()
 
     log.info("done | %d rows across %d feeds", total, len(feeds))
+    emit_metric(job="bronze", feed="__total__", rows_appended=total, feeds=len(feeds))
 
 
 if __name__ == "__main__":

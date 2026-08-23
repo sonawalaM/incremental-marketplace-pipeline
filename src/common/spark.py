@@ -1,11 +1,22 @@
 """Spark session + shared helpers."""
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from datetime import datetime, timezone
 
 from pyspark.sql import SparkSession
+
+
+def emit_metric(**fields) -> None:
+    """Print one machine-readable METRIC line.
+
+    Human logs are for humans; these lines are for the runner, for CI assertions, and for
+    anyone reviewing a run without reading 400 lines of Spark chatter. Scraping row counts
+    out of prose is how verification quietly rots.
+    """
+    print("METRIC " + json.dumps(fields, default=str), flush=True)
 
 
 def get_logger(name: str) -> logging.Logger:

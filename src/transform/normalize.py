@@ -29,7 +29,7 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import DecimalType
 
 from src.common import config
-from src.common.spark import build_spark, get_logger, parse_interval
+from src.common.spark import build_spark, emit_metric, get_logger, parse_interval
 
 log = get_logger("normalize")
 
@@ -216,22 +216,36 @@ def main() -> None:
     spark = build_spark("normalize")
     try:
         df = normalize_all(spark, start.isoformat(), end.isoformat()).cache()
-        log.info("normalized %d rows", df.count())
+        total = df.count()
+        log.info("normalized %d rows", total)
 
         log.info("rows and revenue by marketplace:")
-        (df.groupBy("marketplace")
-           .agg(F.count("*").alias("rows"),
-                F.countDistinct("order_key").alias("distinct_orders"),
-                F.sum("gross_amount_usd").alias("gross_usd"))
-           .orderBy("marketplace").show(truncate=False))
+        by_mkt = (df.groupBy("marketplace")
+                    .agg(F.count("*").alias("rows"),
+                         F.countDistinct("order_key").alias("distinct_orders"),
+                         F.sum("gross_amount_usd").alias("gross_usd"))
+                    .orderBy("marketplace"))
+        by_mkt.show(truncate=False)
+        for r in by_mkt.collect():
+            emit_metric(job="normalize", marketplace=r["marketplace"], rows=r["rows"],
+                        distinct_orders=r["distinct_orders"], gross_usd=str(r["gross_usd"]))
 
         log.info("status vocabulary after mapping (must be placed/paid/refunded/cancelled):")
-        df.groupBy("order_status").count().orderBy("order_status").show(truncate=False)
+        status = df.groupBy("order_status").count().orderBy("order_status")
+        status.show(truncate=False)
+        statuses = {r["order_status"]: r["count"] for r in status.collect()}
+        unexpected = sorted(set(statuses) - {"placed", "paid", "refunded", "cancelled"})
 
         log.info("null check on columns that must never be null:")
         required = ["order_key", "event_time_utc", "updated_at_utc", "order_date",
                     "gross_amount", "gross_amount_usd"]
+        nulls = df.select([F.sum(F.col(c).isNull().cast("int")).alias(c)
+                           for c in required]).collect()[0].asDict()
         df.select([F.sum(F.col(c).isNull().cast("int")).alias(c) for c in required]).show()
+
+        emit_metric(job="normalize", total_rows=total, statuses=statuses,
+                    unexpected_statuses=unexpected, nulls=nulls,
+                    ok=(not unexpected and not any(nulls.values())))
 
         df.orderBy("order_key").show(args.show, truncate=False)
     finally:
