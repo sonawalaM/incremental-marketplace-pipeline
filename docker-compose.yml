@@ -1,7 +1,9 @@
 services:
   source-db:
     image: postgres:16
-    container_name: mkt-source-db
+    # No container_name on purpose. Container names are global to the Docker daemon, so a fixed
+    # one collides with any other checkout of this repo (and blocks a rename of the project
+    # folder). Compose derives <project>-source-db-1, which is unique per directory.
     environment:
       POSTGRES_USER: pipeline
       POSTGRES_PASSWORD: pipeline
