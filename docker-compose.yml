@@ -1,0 +1,40 @@
+services:
+  source-db:
+    image: postgres:16
+    container_name: mkt-source-db
+    environment:
+      POSTGRES_USER: pipeline
+      POSTGRES_PASSWORD: pipeline
+      POSTGRES_DB: marketplace
+    ports:
+      - "5433:5432"          # 5433 on the host to avoid colliding with a local Postgres
+    volumes:
+      - ./sql:/docker-entrypoint-initdb.d:ro
+      - source-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pipeline -d marketplace"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Spark job runner. Not a long-running service — invoked with `docker compose run --rm jobs ...`
+  # so each job is a fresh process, the way spark-submit behaves in production.
+  jobs:
+    build: .
+    image: mkt-jobs
+    depends_on:
+      source-db:
+        condition: service_healthy
+    environment:
+      SOURCE_JDBC_URL: jdbc:postgresql://source-db:5432/marketplace
+      SOURCE_USER: pipeline
+      SOURCE_PASSWORD: pipeline
+      SOURCE_DSN: postgresql://pipeline:pipeline@source-db:5432/marketplace
+      LAKE_ROOT: /app/data
+    volumes:
+      - .:/app                        # live code, no rebuild between edits
+    working_dir: /app
+    entrypoint: ["python"]
+
+volumes:
+  source-data:

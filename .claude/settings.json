@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "defaultMode": "auto",
+    "allow": [
+      "Bash(docker compose *)", "Bash(docker *)", "Bash(make *)",
+      "Bash(python *)", "Bash(python3 *)", "Bash(pip *)",
+      "Bash(pytest *)", "Bash(psql *)", "Bash(spark-submit *)",
+      "Bash(dbt *)", "Bash(git *)", "Edit(**)", "Write(**)"
+    ],
+    "deny": ["Bash(rm -rf *)", "Bash(git push --force*)"]
+  }
+}
