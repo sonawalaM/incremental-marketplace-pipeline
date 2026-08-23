@@ -83,7 +83,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--interval-start", default=DEFAULT_START)
     ap.add_argument("--interval-end", default=DEFAULT_END)
-    ap.add_argument("--steps", default="up,seed,build,bronze,normalize,tests")
+    ap.add_argument("--steps", default="up,seed,build,bronze,normalize,silver,tests")
     ap.add_argument("--fresh", action="store_true",
                     help="docker compose down -v first, and delete the lake")
     args = ap.parse_args()
@@ -114,6 +114,7 @@ def main() -> int:
         "seed": (jobs + ["-m", "src.generator.seed"] + SEED_ARGS, 600),
         "bronze": (jobs + ["-m", "src.ingestion.bronze"] + interval, 900),
         "normalize": (jobs + ["-m", "src.transform.normalize"] + interval, 900),
+        "silver": (jobs + ["-m", "src.ingestion.silver"] + interval, 900),
         "tests": (jobs + ["-m", "pytest", "tests/", "-q"], 900),
     }
 
