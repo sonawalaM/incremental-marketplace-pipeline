@@ -166,11 +166,13 @@ seconds.
 | `python run.py --steps normalize` | Three feeds → one shape, and print what it produced | 30 s |
 | `python run.py --steps silver` | Dedup + guarded MERGE into Silver | 40 s |
 | `python run.py --steps gate` | **The proof.** 7-day build ×2, then replay | 3–4 min |
-| `python run.py --steps tests` | 27 unit tests, in the container | 30 s |
+| `python run.py --steps tests` | 35 unit tests, in the container | 30 s |
+| `python run.py --verbose ...` | Any of the above, printing every line Spark emits | — |
 
 The tests themselves need neither Delta nor Postgres — only Spark — so you can also run them on
-the host if you have PySpark installed: `python -m pytest tests/ -q`. Nine of them are pure
-stdlib and check that this README has not drifted from the code.
+the host if you have PySpark installed: `python -m pytest tests/ -q`. Twenty-three of them are
+pure stdlib: they check that this README has not drifted from the code, that the Docker
+preflight reads the right signal, and that the console filter shows what matters.
 
 Steps are comma-separated and run in the order you give them:
 
@@ -194,12 +196,35 @@ docker compose run --rm jobs -m src.ingestion.bronze \
   --interval-end   2026-08-04T00:00:00+00:00
 ```
 
-### What every run writes
+### What you see while it runs
+
+Output is streamed as it arrives, not held until the step ends. Spark emits several hundred
+warning lines per job — native-hadoop, illegal reflective access, ivy resolution — and none of
+them are about this pipeline, so the console shows only your jobs' own logs, docker's progress,
+metrics, and anything that looks like a failure:
+
+```
+[3/6] bronze     (timeout 15m00s)
+      $ docker compose run --rm jobs -m src.ingestion.bronze --interval-start ...
+      . shopify_orders | read 348 rows, slice fingerprint a1b2c3d4e5f60718
+      METRIC bronze     feed=shopify_orders  rows_read=348  rows_appended=348
+      . amazon_orders  | read 321 rows, slice fingerprint 90aabbccddeeff01
+      ok   bronze in 34s
+```
+
+If a step goes quiet — the image build is six minutes of near-silence — it says so rather than
+looking hung:
+
+```
+      ... still running, 2m20s, 412 lines hidden
+```
+
+`--verbose` turns the filter off. Nothing is ever lost either way:
 
 | File | Contents |
 |---|---|
-| `.runs/latest.log` | Full transcript, UTF-8, ANSI stripped |
-| `.runs/summary.json` | Per-step pass/fail, plus every `METRIC` line the jobs emitted |
+| `.runs/latest.log` | **Every** line, unfiltered, UTF-8, ANSI stripped |
+| `.runs/summary.json` | Per-step pass/fail, duration, and every `METRIC` line the jobs emitted |
 
 Jobs print machine-readable metrics alongside human logs:
 
@@ -207,8 +232,14 @@ Jobs print machine-readable metrics alongside human logs:
 METRIC {"job": "silver", "rows_in": 981, "rows_after_dedup": 828, "duplicate_keys": 0}
 ```
 
-Reviewing a run should mean reading a structured summary, not scrolling several hundred lines
-of Spark warnings looking for a row count.
+Reviewing a run afterwards should mean reading a structured summary, not scrolling several
+hundred lines of Spark warnings looking for a row count. Watching one live should mean seeing
+the row counts as they land. Those are different jobs, so they get different outputs — and
+which line goes where is pinned by `tests/test_run_console.py`, not left to whichever Spark
+version is installed.
+
+On failure the last fifteen meaningful lines are printed straight to the console, with the
+step, its duration and its exit code — a pointer to a log file is not a diagnosis.
 
 ---
 
@@ -462,7 +493,7 @@ earns its place when a full recompute costs more than you're willing to pay.
 │   │   └── silver.py             dedup + MERGE, guarded or naive
 │   ├── transform/normalize.py    three shapes → one order table
 │   └── gate.py                   the proof
-├── tests/                        27 unit tests, incl. docs-vs-code drift checks
+├── tests/                        35 unit tests, incl. docs-vs-code drift checks
 └── data/                         Delta lake root (gitignored)
 ```
 
