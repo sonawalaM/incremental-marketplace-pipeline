@@ -122,13 +122,19 @@ tears the lake down — so a stopped Docker Desktop costs you one line, not a na
 
 ```
 ============================================================
-  BLOCKED  Docker Desktop is not running — every step here shells out to `docker compose`.
-  Start Docker Desktop, wait for the whale icon to stop animating, then re-run.
+  BLOCKED  Docker cannot be reached — every step here shells out to `docker compose`.
+  Start Docker Desktop and wait for the whale icon to stop animating, then re-run.
+  If it is already running, `docker info` in a new shell will show the real error.
 ============================================================
 ```
 
 Exit code `2`, and `.runs/summary.json` records `"overall": "BLOCKED"`. Nothing is deleted and
 nothing half-runs.
+
+The check is on `docker info`'s **output**, not its exit code, and there is a test for that.
+On Windows the Docker CLI exits `0` with Docker Desktop stopped — it prints the connect error
+to stderr and returns success anyway — so a preflight that trusts `returncode` passes and the
+named-pipe error comes back one step later. See `tests/test_run_preflight.py`.
 
 ### First run
 
@@ -160,7 +166,7 @@ seconds.
 | `python run.py --steps normalize` | Three feeds → one shape, and print what it produced | 30 s |
 | `python run.py --steps silver` | Dedup + guarded MERGE into Silver | 40 s |
 | `python run.py --steps gate` | **The proof.** 7-day build ×2, then replay | 3–4 min |
-| `python run.py --steps tests` | 21 unit tests, in the container | 30 s |
+| `python run.py --steps tests` | 27 unit tests, in the container | 30 s |
 
 The tests themselves need neither Delta nor Postgres — only Spark — so you can also run them on
 the host if you have PySpark installed: `python -m pytest tests/ -q`. Nine of them are pure
@@ -456,7 +462,7 @@ earns its place when a full recompute costs more than you're willing to pay.
 │   │   └── silver.py             dedup + MERGE, guarded or naive
 │   ├── transform/normalize.py    three shapes → one order table
 │   └── gate.py                   the proof
-├── tests/                        21 unit tests, incl. docs-vs-code drift checks
+├── tests/                        27 unit tests, incl. docs-vs-code drift checks
 └── data/                         Delta lake root (gitignored)
 ```
 

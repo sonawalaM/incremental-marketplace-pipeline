@@ -69,15 +69,36 @@ def metrics_from(output: str) -> list[dict]:
     return found
 
 
+def daemon_is_up(exit_code: int, output: str) -> bool:
+    """Decide from `docker info --format {{.ServerVersion}}` whether the daemon is reachable.
+
+    **The exit code is not evidence.** On Windows the Docker CLI exits 0 with Docker Desktop
+    stopped — it writes the connect error to stderr and returns success anyway:
+
+        $ docker info --format {{.ServerVersion}}
+        error during connect: ... open //./pipe/dockerDesktopLinuxEngine: The system
+        cannot find the file specified.
+        [exit 0]
+
+    So the check is on the *output*: a reachable daemon prints a version and nothing else.
+    Kept as a pure function of (exit_code, output) so the Windows behaviour above is pinned by
+    a test rather than by whichever machine happened to run it.
+    """
+    if exit_code != 0:
+        return False
+    first = next((l.strip() for l in output.splitlines() if l.strip()), "")
+    return re.match(r"^\d+\.\d+", first) is not None
+
+
 def docker_is_running(log: list[str]) -> bool:
     """Every step shells out to `docker compose`, so check the daemon once, up front.
 
     Without this the first failure is a named-pipe error from the Docker CLI —
     `open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified` —
-    which says nothing about what to do next. One `docker info` turns that into one sentence.
+    which says nothing about what to do next.
     """
-    code, _ = run(["docker", "info", "--format", "{{.ServerVersion}}"], log, timeout=30)
-    return code == 0
+    code, out = run(["docker", "info", "--format", "{{.ServerVersion}}"], log, timeout=30)
+    return daemon_is_up(code, out)
 
 
 def wait_for_db(log: list[str], attempts: int = 30) -> bool:
@@ -109,8 +130,9 @@ def main() -> int:
     log.append(f"run started {started_at}\ninterval [{args.interval_start}, {args.interval_end})\n")
 
     if steps and not docker_is_running(log):
-        msg = ("Docker Desktop is not running — every step here shells out to `docker compose`.\n"
-               "  Start Docker Desktop, wait for the whale icon to stop animating, then re-run.")
+        msg = ("Docker cannot be reached — every step here shells out to `docker compose`.\n"
+               "  Start Docker Desktop and wait for the whale icon to stop animating, then re-run.\n"
+               "  If it is already running, `docker info` in a new shell will show the real error.")
         print("\n" + "=" * 60 + f"\n  BLOCKED  {msg}\n" + "=" * 60)
         log.append(msg + "\n")
         (RUNS_DIR / "latest.log").write_text("".join(log), encoding="utf-8")
