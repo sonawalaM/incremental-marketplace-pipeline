@@ -137,3 +137,32 @@ def test_union_keeps_one_row_per_source_version(spark):
     out = normalize_shopify(shopify)
     assert out.count() == 2
     assert out.select("order_key").distinct().count() == 1
+
+
+def test_refunded_orders_contribute_zero_revenue(spark):
+    """The single most load-bearing column in the project.
+
+    Amounts do not change between versions of an order — only the status does. If revenue were
+    SUM(gross_amount_usd), reverting a refund would change the status and leave the number
+    identical, and the whole replay demonstration would silently prove nothing.
+    """
+    rows = [(f"{i}", datetime(2026, 8, 2, 9, 0, tzinfo=UTC), datetime(2026, 8, 2, 9, 0, tzinfo=UTC),
+             Decimal("100.00"), "USD", Decimal("0.00"), s, *META)
+            for i, s in enumerate(("Unshipped", "Refunded", "Canceled"))]
+    df = spark.createDataFrame(
+        rows,
+        "AmazonOrderId string, PurchaseDate timestamp, LastUpdateDate timestamp, "
+        "OrderTotal_Amount decimal(12,2), OrderTotal_CurrencyCode string, "
+        "ShippingPrice_Amount decimal(12,2), OrderStatus string, "
+        "_ingest_run_id string, _interval_start timestamp, _interval_end timestamp",
+    )
+    fx = spark.createDataFrame(
+        [("USD/USD", date(2026, 8, 2), Decimal("1.00000000"))],
+        "currency_pair string, rate_date date, rate decimal(18,8)",
+    )
+    out = {r.order_status: (r.gross_amount_usd, r.net_amount_usd)
+           for r in convert_to_usd(normalize_amazon(df), fx).collect()}
+
+    assert out["paid"] == (Decimal("100.00"), Decimal("100.00"))
+    assert out["refunded"] == (Decimal("100.00"), Decimal("0.00"))
+    assert out["cancelled"] == (Decimal("100.00"), Decimal("0.00"))

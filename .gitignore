@@ -3,7 +3,6 @@ data/
 
 # Run logs — machine-local, regenerated every run
 .runs/
-normalize_out.txt
 
 # Verification baselines are generated, not authored
 tests/baselines/*.json

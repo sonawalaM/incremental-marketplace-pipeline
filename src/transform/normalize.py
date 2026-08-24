@@ -43,9 +43,13 @@ CANONICAL_COLUMNS = [
     "order_key", "marketplace", "marketplace_order_id",
     "event_time_utc", "order_date", "updated_at_utc",
     "order_status", "currency",
-    "gross_amount", "shipping_amount", "gross_amount_usd",
+    "gross_amount", "shipping_amount", "gross_amount_usd", "net_amount_usd",
     "_ingest_run_id", "_interval_start", "_interval_end",
 ]
+
+# Statuses that contribute nothing to revenue. A refunded order still has a gross amount --
+# the customer was charged -- but the money went back, so it must not be counted.
+NON_REVENUE_STATUSES = ("refunded", "cancelled")
 
 
 def _finalize(df: DataFrame, marketplace: str) -> DataFrame:
@@ -59,7 +63,8 @@ def _finalize(df: DataFrame, marketplace: str) -> DataFrame:
         # when we ingested it. This is the column silver partitions on, and the reason a
         # refund processed today still reduces the day the order belongs to.
         .withColumn("order_date", F.to_date("event_time_utc"))
-        .select(*[c for c in CANONICAL_COLUMNS if c != "gross_amount_usd"])
+        .select(*[c for c in CANONICAL_COLUMNS
+                  if c not in ("gross_amount_usd", "net_amount_usd")])
     )
 
 
@@ -181,6 +186,14 @@ def convert_to_usd(orders: DataFrame, fx: DataFrame) -> DataFrame:
             "gross_amount_usd",
             (F.col("gross_amount") * F.coalesce(F.col("rate"), F.lit(1).cast(RATE))).cast(AMOUNT),
         )
+        # net_amount_usd is what "revenue" means everywhere downstream. Keeping it as a stored
+        # column rather than a filter at query time means every consumer -- the gate, the
+        # metrics, gold -- agrees on the definition instead of each re-deriving it.
+        .withColumn(
+            "net_amount_usd",
+            F.when(F.col("order_status").isin(*NON_REVENUE_STATUSES), F.lit(0).cast(AMOUNT))
+             .otherwise(F.col("gross_amount_usd")),
+        )
         .drop("_pair", "currency_pair", "rate_date", "rate")
         .select(*CANONICAL_COLUMNS)
     )
@@ -223,12 +236,13 @@ def main() -> None:
         by_mkt = (df.groupBy("marketplace")
                     .agg(F.count("*").alias("rows"),
                          F.countDistinct("order_key").alias("distinct_orders"),
-                         F.sum("gross_amount_usd").alias("gross_usd"))
+                         F.sum("gross_amount_usd").alias("gross_usd"),
+                         F.sum("net_amount_usd").alias("net_usd"))
                     .orderBy("marketplace"))
         by_mkt.show(truncate=False)
         for r in by_mkt.collect():
             emit_metric(job="normalize", marketplace=r["marketplace"], rows=r["rows"],
-                        distinct_orders=r["distinct_orders"], gross_usd=str(r["gross_usd"]))
+                        distinct_orders=r["distinct_orders"], gross_usd=str(r["gross_usd"]), net_usd=str(r["net_usd"]))
 
         log.info("status vocabulary after mapping (must be placed/paid/refunded/cancelled):")
         status = df.groupBy("order_status").count().orderBy("order_status")
@@ -238,7 +252,7 @@ def main() -> None:
 
         log.info("null check on columns that must never be null:")
         required = ["order_key", "event_time_utc", "updated_at_utc", "order_date",
-                    "gross_amount", "gross_amount_usd"]
+                    "gross_amount", "gross_amount_usd", "net_amount_usd"]
         nulls = df.select([F.sum(F.col(c).isNull().cast("int")).alias(c)
                            for c in required]).collect()[0].asDict()
         df.select([F.sum(F.col(c).isNull().cast("int")).alias(c) for c in required]).show()

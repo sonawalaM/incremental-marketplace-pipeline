@@ -69,6 +69,17 @@ def metrics_from(output: str) -> list[dict]:
     return found
 
 
+def docker_is_running(log: list[str]) -> bool:
+    """Every step shells out to `docker compose`, so check the daemon once, up front.
+
+    Without this the first failure is a named-pipe error from the Docker CLI —
+    `open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified` —
+    which says nothing about what to do next. One `docker info` turns that into one sentence.
+    """
+    code, _ = run(["docker", "info", "--format", "{{.ServerVersion}}"], log, timeout=30)
+    return code == 0
+
+
 def wait_for_db(log: list[str], attempts: int = 30) -> bool:
     for _ in range(attempts):
         code, _ = run(["docker", "compose", "exec", "-T", "source-db",
@@ -97,6 +108,17 @@ def main() -> int:
     started_at = datetime.now(timezone.utc).isoformat()
     log.append(f"run started {started_at}\ninterval [{args.interval_start}, {args.interval_end})\n")
 
+    if steps and not docker_is_running(log):
+        msg = ("Docker Desktop is not running — every step here shells out to `docker compose`.\n"
+               "  Start Docker Desktop, wait for the whale icon to stop animating, then re-run.")
+        print("\n" + "=" * 60 + f"\n  BLOCKED  {msg}\n" + "=" * 60)
+        log.append(msg + "\n")
+        (RUNS_DIR / "latest.log").write_text("".join(log), encoding="utf-8")
+        (RUNS_DIR / "summary.json").write_text(json.dumps(
+            {"started_at": started_at, "overall": "BLOCKED", "reason": "docker daemon unreachable",
+             "steps": [], "metrics": []}, indent=2), encoding="utf-8")
+        return 2
+
     if args.fresh:
         run(["docker", "compose", "down", "-v"], log)
         lake = Path("data")
@@ -117,8 +139,7 @@ def main() -> int:
         "silver": (jobs + ["-m", "src.ingestion.silver"] + interval, 900),
         # The gate manages its own lake and its own intervals — it is a full 7-day forward
         # pass plus a replay, not a single-interval job.
-        "gate": (jobs + ["-m", "src.gate", "--start", "2026-08-01",
-                         "--days", "7", "--replay", "2026-08-02"], 1800),
+        "gate": (jobs + ["-m", "src.gate"], 1800),
         "tests": (jobs + ["-m", "pytest", "tests/", "-q"], 900),
     }
 

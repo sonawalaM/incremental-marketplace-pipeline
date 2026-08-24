@@ -13,12 +13,16 @@ That single constraint is what buys:
 
 The naive alternative (`WHERE updated_at > (SELECT max(updated_at) FROM target)`) makes the
 slice a function of pipeline history: not reproducible, races under concurrency, and backfill
-means mutating state. That version lands in step 5 behind --strategy=naive so readers can run
-the failure themselves.
+means mutating state.
+
+Every read also emits a `slice_fingerprint` — a digest of the raw rows before any metadata is
+attached. Re-run the same interval and it is identical, which is the evidence that a changed
+answer downstream cannot be blamed on new data arriving. See `src/gate.py`.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -50,6 +54,19 @@ def read_slice(spark: SparkSession, feed: config.Feed, start_iso: str, end_iso: 
     )
 
 
+def slice_fingerprint(df: DataFrame) -> str:
+    """SHA-256 of the raw source slice, before any metadata is attached.
+
+    This is the evidence that a replay is not reading new data. Re-run the same interval and
+    this value is identical; if it moves, the source changed and a different answer downstream
+    is legitimate rather than a bug. Sorted in Python so the digest does not depend on Spark's
+    partition ordering.
+    """
+    cols = [F.col(c).cast("string") for c in df.columns]
+    row_hashes = sorted(r[0] for r in df.select(F.sha2(F.concat_ws("|", *cols), 256)).collect())
+    return hashlib.sha256("".join(row_hashes).encode()).hexdigest()[:16]
+
+
 def add_metadata(df: DataFrame, run_id: str, start_iso: str, end_iso: str) -> DataFrame:
     """_ingest_date partitions on the INTERVAL's date, not on wall clock — otherwise the
     same interval replayed tomorrow would land in a different partition and the rerun would
@@ -69,19 +86,24 @@ def add_metadata(df: DataFrame, run_id: str, start_iso: str, end_iso: str) -> Da
 
 def ingest_feed(spark: SparkSession, feed: config.Feed, run_id: str,
                 start_iso: str, end_iso: str) -> int:
-    df = add_metadata(read_slice(spark, feed, start_iso, end_iso), run_id, start_iso, end_iso)
-    n = df.count()
+    raw = read_slice(spark, feed, start_iso, end_iso).cache()
+    n = raw.count()
+    fingerprint = slice_fingerprint(raw) if n else "-"
+    df = add_metadata(raw, run_id, start_iso, end_iso)
     if n == 0:
         log.warning("%s | 0 rows in interval — nothing written", feed.name)
-        emit_metric(job="bronze", feed=feed.name, rows_appended=0)
+        emit_metric(job="bronze", feed=feed.name, rows_read=0, rows_appended=0)
         return 0
     (df.write.format("delta")
        .mode("append")
        .partitionBy("_ingest_date")
        .option("mergeSchema", "false")     # schema evolution is article #2, not a silent default
        .save(feed.bronze_path))
+    log.info("%s | read %d rows, slice fingerprint %s", feed.name, n, fingerprint)
     log.info("%s | appended %d rows -> %s", feed.name, n, feed.bronze_path)
-    emit_metric(job="bronze", feed=feed.name, rows_appended=n, run_id=run_id)
+    emit_metric(job="bronze", feed=feed.name, rows_read=n, rows_appended=n,
+                slice_fingerprint=fingerprint, run_id=run_id)
+    raw.unpersist()
     return n
 
 

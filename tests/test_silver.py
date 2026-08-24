@@ -22,6 +22,7 @@ SCHEMA = (
     "event_time_utc timestamp, order_date date, updated_at_utc timestamp, "
     "order_status string, currency string, gross_amount decimal(12,2), "
     "shipping_amount decimal(12,2), gross_amount_usd decimal(12,2), "
+    "net_amount_usd decimal(12,2), "
     "_ingest_run_id string, _interval_start timestamp, _interval_end timestamp"
 )
 
@@ -31,6 +32,7 @@ def row(key, updated_h, status, amount="100.00", order_day=2, run="run-1"):
             datetime(2026, 8, order_day, 9, 0, tzinfo=UTC), date(2026, 8, order_day),
             datetime(2026, 8, order_day, updated_h, 0, tzinfo=UTC),
             status, "USD", Decimal(amount), Decimal("0.00"), Decimal(amount),
+            Decimal("0.00") if status in ("refunded", "cancelled") else Decimal(amount),
             run, datetime(2026, 8, 2, tzinfo=UTC), datetime(2026, 8, 3, tzinfo=UTC))
 
 
@@ -109,7 +111,7 @@ def test_backdated_refund_keeps_the_orders_own_date(spark):
          ("shopify:1", "shopify", "1",
           datetime(2026, 8, 2, 9, 0, tzinfo=UTC), date(2026, 8, 2),
           datetime(2026, 8, 6, 3, 0, tzinfo=UTC), "refunded", "USD",
-          Decimal("100.00"), Decimal("0.00"), Decimal("100.00"),
+          Decimal("100.00"), Decimal("0.00"), Decimal("100.00"), Decimal("0.00"),
           "run-2", datetime(2026, 8, 6, tzinfo=UTC), datetime(2026, 8, 7, tzinfo=UTC))],
         SCHEMA,
     )

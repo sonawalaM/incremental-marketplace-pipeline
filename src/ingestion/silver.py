@@ -40,6 +40,10 @@ log = get_logger("silver")
 SILVER_PATH = f"{config.SILVER_ROOT}/orders"
 KEY = "order_key"
 
+# The restatement guard, as a MERGE condition. Passing None instead removes it, which is the
+# naive implementation the article is about: correct going forward, destructive on replay.
+RESTATEMENT_GUARD = "s.updated_at_utc > t.updated_at_utc"
+
 
 def dedupe_batch(df: DataFrame) -> DataFrame:
     """Collapse to the latest version per order.
@@ -60,13 +64,21 @@ def dedupe_batch(df: DataFrame) -> DataFrame:
     )
 
 
-def merge_into_silver(spark: SparkSession, batch: DataFrame) -> dict:
+def merge_into_silver(spark: SparkSession, batch: DataFrame, *,
+                      path: str = SILVER_PATH, guarded: bool = True) -> dict:
+    """Upsert one deduped batch into a silver table.
+
+    `guarded=False` drops the restatement condition from the MERGE. Everything else is
+    identical — same read, same dedup, same keys, same partitioning. That single difference
+    is the whole subject of the article, so it is expressed as one flag rather than a
+    separate code path that could drift.
+    """
     batch = batch.select(*CANONICAL_COLUMNS).cache()
 
-    if not DeltaTable.isDeltaTable(spark, SILVER_PATH):
+    if not DeltaTable.isDeltaTable(spark, path):
         n = batch.count()
         (batch.write.format("delta").mode("overwrite")
-              .partitionBy("order_date").save(SILVER_PATH))
+              .partitionBy("order_date").save(path))
         log.info("created silver with %d rows", n)
         return {"created": True, "rows_written": n}
 
@@ -80,12 +92,12 @@ def merge_into_silver(spark: SparkSession, batch: DataFrame) -> dict:
     # from event time, which never changes. If a restatement could move an order to a different
     # day, the pruned target would miss the existing row and MERGE would insert a duplicate.
     # Anything that can change its own partition key cannot be pruned on it.
-    target = DeltaTable.forPath(spark, SILVER_PATH)
-    (target.alias("t")
-        .merge(batch.alias("s"), f"t.{KEY} = s.{KEY} AND {partition_pred}")
-        .whenMatchedUpdateAll(condition="s.updated_at_utc > t.updated_at_utc")
-        .whenNotMatchedInsertAll()
-        .execute())
+    target = DeltaTable.forPath(spark, path)
+    merge = (target.alias("t")
+             .merge(batch.alias("s"), f"t.{KEY} = s.{KEY} AND {partition_pred}"))
+    merge = (merge.whenMatchedUpdateAll(condition=RESTATEMENT_GUARD) if guarded
+             else merge.whenMatchedUpdateAll())          # <- naive: any version overwrites
+    merge.whenNotMatchedInsertAll().execute()
 
     m = target.history(1).select("operationMetrics").collect()[0][0]
     return {
@@ -119,7 +131,7 @@ def main() -> None:
         silver = spark.read.format("delta").load(SILVER_PATH)
         total = silver.count()
         distinct = silver.select(KEY).distinct().count()
-        revenue = silver.agg(F.sum("gross_amount_usd")).collect()[0][0]
+        revenue = silver.agg(F.sum("net_amount_usd")).collect()[0][0]
 
         log.info("silver | %d rows, %d distinct keys, revenue_usd=%s", total, distinct, revenue)
         emit_metric(job="silver", rows_in=rows_in, rows_after_dedup=rows_deduped,

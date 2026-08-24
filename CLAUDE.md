@@ -13,15 +13,19 @@ order table → daily revenue, built to be **safely re-runnable**.
 Postgres CDC-style feeds
    │  sliced by updated_at        ← system time
    ▼
-BRONZE  Delta · append-only · partitioned by _ingest_date
-   │  dedup + MERGE with restatement guard
+BRONZE  Delta · append-only · partitioned by _ingest_date · emits slice_fingerprint
+   │  normalize → dedup → MERGE
    ▼
-SILVER  orders · latest version per order · partitioned by order_date   ← business time
+SILVER  data/silver/orders        guarded  (WHEN MATCHED AND s.updated_at_utc > t.updated_at_utc)
+        data/silver/orders_naive  naive    (WHEN MATCHED)
+        one row per order · partitioned by order_date   ← business time
    │
    ▼
-GOLD    fct_orders          one row per order, current state
-        agg_daily_revenue   marketplace × order_date → orders, gross, refunds, net, AOV
+GOLD    fct_orders, agg_daily_revenue  — NOT BUILT YET (step 7)
 ```
+
+**Revenue = `net_amount_usd`**, a stored column: USD at the order's own date's FX rate, zero if
+refunded or cancelled. Never `SUM(gross_amount_usd)` — see build step 6.
 
 ## The thesis — do not lose this
 
@@ -79,11 +83,22 @@ A step is not done until the README reflects it.
 - **MERGE always carries a partition predicate** on `order_date`, or it full-scans.
 - **Two clocks stay separate.** Slice on `updated_at` (system). Partition on `order_date`
   (business). Never mix them.
-- **The repo must run broken on demand.** `make demo-broken` vs `make demo-fixed`, one config
-  flag apart. The failure has to be reproducible by a reader.
+- **The repo must run broken on demand.** `src/gate.py` builds BOTH silver tables from the same
+  batch — guarded and naive, one MERGE condition apart — and the gate FAILS if the naive one
+  does not break. A demonstration that cannot fail proves nothing.
+- **`run.py` preflights the Docker daemon before anything else**, including before `--fresh`
+  tears down the lake. Daemon down → exit 2, `overall: BLOCKED`, nothing deleted. Every step
+  shells out to `docker compose`, so the check belongs at the top, not per-step.
 - **Generator stays deterministic.** Same seed → byte-identical output. No `now()`, no unseeded
   random. CI asserts this.
-- **Runtime budget: under 5 minutes on 8 GB RAM.** If a change blows that, the change is wrong.
+- **Runtime budget: under 5 minutes on 8 GB RAM** after the image is built. If a change blows
+  that, the change is wrong.
+- **`demo.py` was removed (Aug 2026) and must not come back.** Readers of a detailed tutorial
+  want the real pipeline; a second toy implementation only creates drift between the article
+  and the code.
+- **README is a deliverable, updated in the same commit as the code.** Every command it lists
+  must exist in `run.py`'s plan, every number must be traceable, every code snippet must appear
+  verbatim in the source.
 - **No double-entry accounting.** Deliberately removed — it added conceptual load for readers
   who aren't finance people. Revenue is the metric.
 
@@ -91,11 +106,15 @@ A step is not done until the README reflects it.
 
 1. ✅ Source DB + deterministic feeds — *verified: 2416/2421/2393 rows*
 2. ✅ Bronze ingestion — *verified: 348/321/312 for 2026-08-02*
-3. ✅ Normalize 3 feeds → one shape — *verified vs source: 981 rows, $197,056.32*
-4. ✅ Silver MERGE + restatement guard — *verified: 981→828, 153 collapsed, 0 dup keys, $165,739.46*
-5. ✅ Gate — 7-day forward pass then replay an old interval; 4 assertions (`src/gate.py`)
-6. Gold — `fct_orders`, `agg_daily_revenue`
-7. Broken mode (`make demo-broken`)
+3. ✅ Normalize 3 feeds → one shape — *verified vs source: 981 rows, gross $197,056.32*
+4. ✅ Silver MERGE + restatement guard — *verified: 981→828, 153 collapsed, 0 dup keys,
+   net $161,892.20 (gross was $165,739.46 before `net_amount_usd` existed)*
+5. ✅ Gate — builds guarded AND naive silver from one batch, 7-day pass then replay; 4
+   assertions plus "the naive table must break" (`src/gate.py`)
+6. ✅ `net_amount_usd` — revenue as a stored column. Load-bearing: amounts do not change
+   between versions, only status does, so `SUM(gross_amount_usd)` would make the replay
+   demonstration print "unchanged" in both columns and prove nothing.
+7. Gold — `fct_orders`, `agg_daily_revenue`
 8. Airflow DAG + backfill demo
 9. dbt marts + data quality tests
 10. CI + clean-clone verification
